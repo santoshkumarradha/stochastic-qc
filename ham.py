@@ -1,24 +1,26 @@
 from logging import raiseExceptions
+from numpy.core.defchararray import mod
 from qiskit.extensions import UnitaryGate as u
 from qiskit import *
 import numpy as np
 from qiskit.circuit.library.basis_change import QFT
 hbar = 1  # do we set it to 1?
+# hbar = 6.5821 * 1e-16
 
 
 def binary(x, n): return ''.join(
     reversed([str((x >> i) & 1) for i in range(n)]))
 
 
-def gaussian(x, mu, sig):
-    return np.exp(-np.power(x - mu, 2.) / (2 * np.power(sig, 2.)))
+def gaussian(x, mu, sig, p0):
+    return np.exp(-np.power(x - mu, 2.) / (2 * np.power(sig, 2.)))*np.exp(1j*p0*(x-mu))
 
 
 # ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------
 
 
 class ham():
-    def __init__(self, n, dt=.01, m=1, start_mu=0, start_sigma=.1, ntimes=1):
+    def __init__(self, n, dt=.01, m=1, start_mu=0, start_p0=0, start_sigma=.1, ntimes=1, xmin=-1, xmax=1):
         """Class to simulate a 1D hamiltonian
 
         Args:
@@ -30,7 +32,9 @@ class ham():
             ntimes (int, optional): Number of time steps to simulate the hamiltonian evolution. Defaults to 1.
         """
         self.n = n
-        self.x = np.arange(-2**self.n, 2**self.n, 2)/2
+        # self.x = np.arange(-2**self.n, 2**self.n, 2)/2
+        # rescale x ? this might probably help
+        self.x = np.linspace(xmin, xmax, 2**n)
         self.q = QuantumRegister(n, 'q')
         self.circ = QuantumCircuit(self.q)
         self.circuit = self.circ
@@ -43,6 +47,7 @@ class ham():
         self.V = None
         self.result = None
         self.initial = None
+        self.p0 = start_p0
 
     def add_H_once(self):
         """Adds the quantum gate
@@ -60,6 +65,24 @@ class ham():
         # V(x)
         self.circ.append(self.V, self.q)
 
+    def add_H_once_modified_trotter(self):
+        """Adds the quantum gate
+        1. QFT to go to momentum space
+        2. add p, which is diognal in momentum sapce
+        3. Inverse QFT back to real space
+        4. add V(x) which is diognal in real space
+        """
+        self.circ.barrier()
+        # V/2
+        self.circ.append(self.V, self.q)
+        # QFT|p|QFT^-1
+        self.circ.append(QFT(self.n), self.q)
+        self.circ.append(self.P, self.q)
+        self.circ.append(QFT(self.n, inverse=True, name="iqft"), self.q)
+
+        # V/2
+        self.circ.append(self.V, self.q)
+
     def get_p(self):
         """Momentum operator in momentum basis
 
@@ -72,37 +95,43 @@ class ham():
         p = np.diag(exp)
         return u(p, label="P^2/2m")
 
-    def get_v(self):
+    def get_v(self, divide=True):
         """Potential operator
 
         Returns:
             Unitary: Potenaital operator
         """
         # seems like I need to reverse the potential, why??
-        exp = np.exp(-1j*self.v*self.dt/hbar)[::-1]
+        k = 1
+        if divide:
+            k = 2
+        exp = np.exp(-1j*self.v*self.dt/(hbar*k))[::-1]
         p = np.diag(exp)
         return u(p, label="V(x)")
 
-    def make_ham(self):
+    def make_ham(self, measure=True, modified_trotter=True):
         """Make the hamiltonian n times after initialization
         """
         if self.V is None:
             raiseExceptions("Please set V with ham.set_V()")
         self.circ = QuantumCircuit(self.q)
-        self.initilize(self.start_mu, self.start_sigma)
-        # self.initilize(self.start_mu, self.start_sigma)
+        self.initilize(self.start_mu, self.start_sigma, self.p0)
         for i in range(self.ntimes):
-            self.add_H_once()
-        self.circ.measure_all()
+            if modified_trotter:
+                self.add_H_once_modified_trotter()
+            else:
+                self.add_H_once()
+        if measure:
+            self.circ.measure_all()
 
-    def initilize(self, mu, sig):
+    def initilize(self, mu, sig, p0):
         """Initialize the hamiltonian with a gaussian state
 
         Args:
             mu (float): center of gaussian
             sig (flaot): varience of gaussian
         """
-        init = gaussian(self.x, mu, sig)
+        init = gaussian(self.x, mu, sig, p0)
         init /= np.linalg.norm(init)
         tab = {}
         for i in range(len(self.x)):
@@ -125,15 +154,20 @@ class ham():
         self.v = v
         self.V = self.get_v()
 
-    def simulate(self, shots=1028):
+    def simulate(self, method='qasm_simulator', shots=1028):
         """Simulate the system 
 
         Args:
             shots (int, optional): Number of simulation shots. Defaults to 1028.
         """
-        simulator = Aer.get_backend('qasm_simulator')
-        result = execute(self.circ, simulator, shots=shots).result()
-        self.result = result.get_counts(self.circ)
+        simulator = Aer.get_backend(method)
+        if method == 'qasm_simulator':
+            result = execute(self.circ, simulator, shots=shots).result()
+            self.result = result.get_counts(self.circ)
+        if method == 'statevector_simulator':
+            result = execute(self.circ, simulator).result()
+            statevector = result.get_statevector(self.circ)
+            self.result = statevector
 
     def plot_potential(self, ax, s=10, color="k"):
         """Plot the potential function
@@ -148,3 +182,14 @@ class ham():
         ax_potential.scatter(range(len(self.v)), self.v,
                              s=s, c=color, label="V(x)")
         ax_potential.grid("off")
+
+    def get_result(self, T=1, dt=0.1, method='statevector_simulator'):
+        self.dt = dt
+        self.ntimes = int(T/dt)
+        self.make_ham(measure=False, modified_trotter=True)
+        if method == 'statevector_simulator':
+            self.simulate(method='statevector_simulator')
+            return [np.real(i*i.conj()) for i in self.result]
+        if method == 'qasm_simulator':
+            self.simulate(method='qasm_simulator')
+            return self.result
