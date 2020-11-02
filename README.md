@@ -2,7 +2,7 @@
 
 ----
 
-### time evolution of gaussian packet in x^4 potential
+### time evolution sde in double well non hermitian opperator
 <p align="center">
-  <img width="100%" height="auto" src="figs/1000*x^4.gif">
+  <img width="100%" height="auto" src="figs/double_well.png">
 </p>
