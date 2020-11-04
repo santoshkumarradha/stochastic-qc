@@ -1,3 +1,4 @@
+from scipy.fftpack import ifftshift, fftshift
 from scipy import fft, ifft
 import numpy as np
 hbar = 1
@@ -39,17 +40,40 @@ class classical_ham():
 
     def set_V(self, v):
         self.v = v
-        self.V_opp = np.diag(np.exp(-1j*self.v * self.dt/2)[::-1])
-        self.p2m = np.diag(np.exp(-1j*self.x**2/(2*self.m) * self.dt))
+        self.V_opp = np.diag(np.exp(-1j * self.v * self.dt/2))
+        self.p2m = np.diag(np.exp(-1j * self.x**2 / (2*self.m) * self.dt))
 
     def simple_v(self, t, dt=None):
         if dt is not None:
             self.dt = dt
         self.set_V(self.v)
-        def applyh(x): return self.V_opp@ifft(self.p2m@fft(self.V_opp@x))
+        # def applyh(x): return self.V_opp@ifft(self.p2m@fft(self.V_opp@x))
+
+        def applyh(x): return self.V_opp@np.fft.ifft(np.fft.fftshift((self.p2m @
+                                                                      np.fft.fftshift(np.fft.fft(self.V_opp@x)))))
         x = self.x0
         t = t * 2**self.n
         self.cnt = t
-        for _ in range(int(t/self.dt)): # in total does 2^n/(dt) steps between each time steps
+        # in total does 2^n/(dt) steps between each time steps
+        for _ in range(int(t/self.dt)):
+            x = applyh(x)
+        return np.real(x*x.conj())
+
+    def H_BS(self, t, dt=None, sigma=.1, r=1):
+        if dt is not None:
+            self.dt = dt
+        po_1 = -(self.x**2)*(sigma**2 / 2)
+        po_2 = (self.x)*((sigma**2 / 2)-r)
+        p2m = np.diag(np.exp(-1j*(po_1+po_2) * self.dt))
+
+        v = np.diag(np.exp(-1j*np.ones_like(self.x)*r * self.dt/2))
+
+        def applyh(x): return v@np.fft.ifft(np.fft.fftshift(p2m @
+                                                            np.fft.fftshift(np.fft.fft(v@x))))
+        x = self.x0
+        t = t * 2**self.n
+        self.cnt = t
+        # in total does 2^n/(dt) steps between each time steps
+        for _ in range(int(t/self.dt)):
             x = applyh(x)
         return np.real(x*x.conj())
