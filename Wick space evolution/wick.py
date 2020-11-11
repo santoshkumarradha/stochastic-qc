@@ -8,12 +8,15 @@ import numpy as np
 from itertools import combinations
 from qiskit.quantum_info import state_fidelity as distance
 from scipy.optimize import minimize
+from tqdm import tqdm as tqdm
 
 
 class wick:
-    def __init__(self, n, seed=0, depth=2):
+    def __init__(self, n, seed=0, depth=2, verbose=False):
         self.n = n
+        self.verbose = verbose
         self.circuit = None
+        self.main_circuit = None
         self.seed = seed
         self.depth = depth
         self.anc = QuantumRegister(1, "ancilla")
@@ -24,13 +27,16 @@ class wick:
         self.gates = None
         self.set_gates()
         self.parameter_two_qubit = 0  # As of now no two qubit gates
-        self.meassure = False
+        self.meassure_at_end = False
         self.make_random_gate_anzats()
         self.initial = None
         self.set_initial()
         self.angles = []
         self.initial_closeness = None
         self.num_parameters = len(self.circuit.parameters)
+        self.circuit_aij = [
+            [0 for i in range(self.num_parameters)] for j in range(self.num_parameters)]
+        self.calculate_aij()
 
     def set_initial(self, mu=0.5, sigma=0.01):
         def gaussian(x, mu, sig):
@@ -53,7 +59,7 @@ class wick:
         self.gates = self.get_random_gates(len(self.theta))
 
     def get_final_state(self, angles):
-        circ_params_wo_meassure = self.circuit.remove_final_measurements(
+        circ_params_wo_meassure = self.main_circuit.remove_final_measurements(
             inplace=False)
         values = {i: angles[j] for j, i in enumerate(
             circ_params_wo_meassure.parameters)}
@@ -62,6 +68,29 @@ class wick:
         result = execute(circ_params_wo_meassure, simulator).result()
         statevector = result.get_statevector(circ_params_wo_meassure)
         return statevector
+
+    def get_final_state_lm(self, angles, ij):
+        """Returns the value of the curcit for Aij
+
+        Args:
+            angles (float array): angles for the anzats 
+            ij (1d array): [i,j] values for Aij element
+
+        Returns:
+            array,dict: State vector and probablity of ancilla being 1 or 0
+        """
+        circ_params_wo_meassure = self.circuit_aij[ij[0]][ij[1]].remove_final_measurements(
+            inplace=False)
+        values = {i: angles[j] for j, i in enumerate(
+            circ_params_wo_meassure.parameters)}
+        circ_params_wo_meassure.assign_parameters(values, inplace=True)
+        simulator = Aer.get_backend('statevector_simulator')
+        result = execute(circ_params_wo_meassure, simulator).result()
+        statevector = result.get_statevector(circ_params_wo_meassure)
+        temp = statevector*statevector.conj()
+        p_1 = np.real(temp[int(len(temp)/2):].sum())
+        results = {'1': p_1, '0': 1-p_1}
+        return statevector, results
 
     def get_cost(self, angles, compare=None):
         a = self.get_final_state(angles)
@@ -103,7 +132,7 @@ class wick:
             set_ancila = 0
             lm = [-1, -1]
         if set_ancila:
-            self.circuit = QuantumCircuit(self.anc, self.basis, self.meassure)
+            self.circuit = QuantumCircuit(self.basis, self.anc, self.meassure)
             self.circuit.h(self.anc)
         else:
             self.circuit = QuantumCircuit(self.basis)
@@ -138,5 +167,19 @@ class wick:
         # Final H on ancila
         if set_ancila:
             self.circuit.h(self.anc)
-            if self.meassure:
+            if self.meassure_at_end:
                 self.circuit.measure(self.anc, self.meassure)
+        if lm == [-1, -1]:
+            self.main_circuit = self.circuit.copy()
+        else:
+            self.circuit_aij[int(lm[0])][int(lm[1])] = self.circuit.copy()
+
+    def calculate_aij(self):
+        if self.verbose:
+            iterations = tqdm(range(self.num_parameters),
+                              desc="Calculating ij parameterized circuits\n")
+        else:
+            iterations = range(self.num_parameters)
+        for i in iterations:
+            for j in range(self.num_parameters):
+                self.make_random_gate_anzats(lm=[i, j])
