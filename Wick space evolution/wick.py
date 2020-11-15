@@ -133,6 +133,8 @@ class wick:
         statevector = result.get_statevector(circ_params_wo_meassure)
         return statevector
 
+    # ! Check if final state claulation, ie Im{e^{it} <0|U|0>} is correct
+
     def get_final_state_lm(self, angles, ij):
         """Returns the value of the curcit for Aij
 
@@ -155,6 +157,8 @@ class wick:
         p_1 = np.real(temp[int(len(temp)/2):].sum())
         results = {'1': p_1, '0': 1-p_1}
         return statevector, results
+
+    # ! Check if final state claulation, ie Im{e^{it} <0|U|0>} is correct
 
     def get_final_state_ik(self, angles, ij):
         """Returns the value of the curcit for Cik
