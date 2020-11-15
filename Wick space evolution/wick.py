@@ -65,12 +65,13 @@ def get_diff_mat(N, a=2, b=1, dx=1):
 
 
 class wick:
-    def __init__(self, n, a=1, b=0, dt=1, seed=0, depth=2, verbose=False):
+    def __init__(self, n, a=1, b=0, dt=1, dx=1, seed=0, depth=2, verbose=False):
         self.n = n
         self.verbose = verbose
         self.a = a
         self.b = b
         self.dt = dt
+        self.dx = dx
         self.circuit = None
         self.main_circuit = None
         self.seed = seed
@@ -143,6 +144,29 @@ class wick:
             array,dict: State vector and probablity of ancilla being 1 or 0
         """
         circ_params_wo_meassure = self.circuit_aij[ij[0]][ij[1]].remove_final_measurements(
+            inplace=False)
+        values = {i: angles[j] for j, i in enumerate(
+            circ_params_wo_meassure.parameters)}
+        circ_params_wo_meassure.assign_parameters(values, inplace=True)
+        simulator = Aer.get_backend('statevector_simulator')
+        result = execute(circ_params_wo_meassure, simulator).result()
+        statevector = result.get_statevector(circ_params_wo_meassure)
+        temp = statevector*statevector.conj()
+        p_1 = np.real(temp[int(len(temp)/2):].sum())
+        results = {'1': p_1, '0': 1-p_1}
+        return statevector, results
+
+    def get_final_state_ik(self, angles, ij):
+        """Returns the value of the curcit for Cik
+
+        Args:
+            angles (float array): angles for the anzats
+            ij (1d array): [i,j] values for Aij element
+
+        Returns:
+            array,dict: State vector and probablity of ancilla being 1 or 0
+        """
+        circ_params_wo_meassure = self.circuit_cik[ij[0]][ij[1]].remove_final_measurements(
             inplace=False)
         values = {i: angles[j] for j, i in enumerate(
             circ_params_wo_meassure.parameters)}
@@ -239,7 +263,7 @@ class wick:
 
     def make_pauli_ham(self):
         # As of now only \partial^2 k included in hamiltonian
-        ham_mat = get_diff_mat(2**self.n, self.a, self.b, self.dt)
+        ham_mat = get_diff_mat(2**self.n, self.a, self.b, self.dx)
         self.ham_pauli = get_paulis(ham_mat)
 
     def make_cik_circ(self, ik, h_pauli, coeff):
