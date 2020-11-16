@@ -113,7 +113,7 @@ class wick:
         compare = gaussian(np.linspace(0, 1, 2**self.n), mu, sigma)
         compare /= np.linalg.norm(compare)
         compare = np.zeros(2**self.n)
-        compare[int(len(compare)/2-2)] = 1
+        compare[int(len(compare)/2-1)] = 1
         self.initial = compare
 
     def get_random_gates(self, num_gates):
@@ -370,23 +370,27 @@ class wick:
                 self.make_cik_circ(
                     ik=[i, j], h_pauli=ham_terms_circ, coeff=coeff)
 
-    def evolve_system(self, dt, N):
+    def evolve_system(self, dt, N, verbose=True):
         from tqdm import tqdm
-        for ntime in range(N):
+        for ntime in tqdm(range(N)):
             if ntime == 0:
                 angles = self.initial_angle
                 self.angles.append(angles)
             else:
 
                 angles = self.angles[ntime]
+            if verbose:
+                iter_range = tqdm(range(self.num_parameters))
+            else:
+                iter_range = range(self.num_parameters)
             A = np.zeros((self.num_parameters, self.num_parameters))
-            for i in tqdm(range(self.num_parameters)):
+            for i in iter_range:
                 for j in range(self.num_parameters):
                     state, p = self.get_final_state_lm(angles, [j, i])
                     A[i, j] = 2*p['1']-1
 
             C = np.zeros((self.num_parameters, self.num_ham_terms))
-            for i in tqdm(range(self.num_parameters)):
+            for i in iter_range:
                 for j in range(self.num_ham_terms):
                     state, p = self.get_final_state_ik(angles, [i, j])
                     C[i, j] = 2*p['1']-1
