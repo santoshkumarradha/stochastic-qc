@@ -13,6 +13,7 @@ from qiskit.extensions import UnitaryGate as ug
 import itertools
 import functools
 import numba
+from scipy.sparse import diags
 
 
 def get_paulis(H, hide_identity=True):
@@ -48,19 +49,22 @@ def get_paulis(H, hide_identity=True):
     return final
 
 
-@numba.njit()
-def get_diff_mat(N, a=2, b=1, dx=1):
+# @numba.njit()
+def get_diff_mat(N, a=1, b=1, dx=1, boundary=1):
     '''
     Returns the differential oppertor matrix for equation given by a(d/dx)+b(d/dx)^2 for log(N) qubits discritized by dx
     '''
-    N -= 1
-    D = np.zeros((N+1, N+1))
-    for i in range(1, N):
-        D[i, i-1] = a/(2*(dx**2)) - b/(2*dx)
-        D[i, i+1] = a/(2*(dx**2)) + b/(2*dx)
-        D[i, i] = -a/((dx**2))
-    D[0, 0] = D[N, N] = -a/((dx**2))  # 1
-    D[0, 1] = D[N, N-1] = a/(2*(dx**2)) - b/(2*dx)
+    # N -= 1
+    # D = np.zeros((N+1, N+1))
+    # for i in range(1, N):
+    #     D[i, i-1] = a/(2*(dx**2)) - b/(2*dx)
+    #     D[i, i+1] = a/(2*(dx**2)) + b/(2*dx)
+    #     D[i, i] = -a/((dx**2))
+    # D[0, 0] = D[N, N] = -a/((dx**2))  # 1
+    # D[0, 1] = D[N, N-1] = a/(2*(dx**2)) - b/(2*dx)
+    D = a*diags([1, -2, 1], [-1, 0, 1], shape=(N, N))/dx
+    D = D.toarray()
+    D[0][0] = D[-1][-1] = boundary
     return D
 
 
@@ -89,6 +93,7 @@ class wick:
         self.initial = None
         self.set_initial()
         self.angles = []
+        self.initial_angle = None
         self.initial_closeness = None
         self.num_parameters = len(self.circuit.parameters)
         self.circuit_aij = [
@@ -102,11 +107,13 @@ class wick:
             [0 for i in range(len(self.ham_pauli))] for j in range(self.num_parameters)]
         self.calculate_cik()
 
-    def set_initial(self, mu=0.5, sigma=0.01):
+    def set_initial(self, mu=0.5, sigma=0.001):
         def gaussian(x, mu, sig):
             return np.exp(-np.power(x - mu, 2.) / (2 * np.power(sig, 2.)))
         compare = gaussian(np.linspace(0, 1, 2**self.n), mu, sigma)
         compare /= np.linalg.norm(compare)
+        compare = np.zeros(2**self.n)
+        compare[int(len(compare)/2-2)] = 1
         self.initial = compare
 
     def get_random_gates(self, num_gates):
@@ -114,6 +121,8 @@ class wick:
         random.seed(self.seed)
         gates = [[YGate, CYGate, CRYGate, RYGate], [XGate, CXGate,
                                                     CRXGate, RXGate], [ZGate, CZGate, CRZGate, RZGate]]
+        # ? Seems like only Y gates alone does it much better ?
+        gates = [[YGate, CYGate, CRYGate, RYGate]]
         return random.choices(gates, k=num_gates)
 
     def set_gates(self):
@@ -199,6 +208,7 @@ class wick:
             print("Warning: Angles not converged within given iterations")
         self.angles.append(result.x)
         self.initial_closeness = result.fun
+        self.initial_angle = result.x
 
     def make_random_gate_anzats(self, lm=None):
 
@@ -241,11 +251,12 @@ class wick:
             self.circuit.barrier()
 
         # single qubit gates
-        for _ in range(self.depth):
+        for iter_depth in range(self.depth):
             if self.parameter_two_qubit == 0:
                 # Two qubit entangling gate series before single qubit parameterized gates
-                for i in self.combi:
-                    self.circuit.cx(self.basis[i[0]], self.basis[i[1]])
+                if iter_depth > 0:
+                    for i in self.combi:
+                        self.circuit.cx(self.basis[i[0]], self.basis[i[1]])
                 self.circuit.barrier()
             for i in range(self.n):
                 qubits = [self.basis[i]]
@@ -305,11 +316,12 @@ class wick:
             self.circuit.barrier()
 
         # single qubit gates
-        for _ in range(self.depth):
+        for iter_depth in range(self.depth):
             if self.parameter_two_qubit == 0:
                 # Two qubit entangling gate series before single qubit parameterized gates
-                for i in self.combi:
-                    self.circuit.cx(self.basis[i[0]], self.basis[i[1]])
+                if iter_depth > 0:
+                    for i in self.combi:
+                        self.circuit.cx(self.basis[i[0]], self.basis[i[1]])
                 self.circuit.barrier()
             for i in range(self.n):
                 qubits = [self.basis[i]]
@@ -318,7 +330,10 @@ class wick:
                     self.gates[cnt][3](self.theta[cnt]), qubits)
                 cnt += 1
             self.circuit.barrier()
-        self.circuit.append(h_pauli[ik[1]], self.circuit.qubits[::-1])
+            qs = [self.anc]
+            for i in self.basis:
+                qs.append(i)
+        self.circuit.append(h_pauli[ik[1]], qs)
         self.circuit.h(self.anc)
         if self.meassure_at_end:
             self.circuit.measure(self.anc, self.meassure)
@@ -336,7 +351,11 @@ class wick:
                 self.make_random_gate_anzats(lm=[i, j])
 
     def calculate_cik(self):
-        ham_terms_circ = [ug(Pauli.from_label(i).to_operator(), label=i).control(
+        # ! ----------------------------------
+        # ! Check if this needs to be refersed ?
+        # ! ----------------------------------
+
+        ham_terms_circ = [ug(Pauli.from_label(i[::-1]).to_operator(), label=" ("+i+")").control(
             1) for i in list(self.ham_pauli.keys())]
         coeff = list(self.ham_pauli.values())
         if self.verbose:
@@ -350,3 +369,27 @@ class wick:
             for j in range(len(ham_terms_circ)):
                 self.make_cik_circ(
                     ik=[i, j], h_pauli=ham_terms_circ, coeff=coeff)
+
+    def evolve_system(self, dt, N):
+        from tqdm import tqdm
+        for ntime in range(N):
+            if ntime == 0:
+                angles = self.initial_angle
+                self.angles.append(angles)
+            else:
+
+                angles = self.angles[ntime]
+            A = np.zeros((self.num_parameters, self.num_parameters))
+            for i in tqdm(range(self.num_parameters)):
+                for j in range(self.num_parameters):
+                    state, p = self.get_final_state_lm(angles, [j, i])
+                    A[i, j] = 2*p['1']-1
+
+            C = np.zeros((self.num_parameters, self.num_ham_terms))
+            for i in tqdm(range(self.num_parameters)):
+                for j in range(self.num_ham_terms):
+                    state, p = self.get_final_state_ik(angles, [i, j])
+                    C[i, j] = 2*p['1']-1
+
+            theta_dot, residuals, rank, s = np.linalg.lstsq(A, C.sum(axis=1))
+            self.angles.append(angles+dt*theta_dot)
